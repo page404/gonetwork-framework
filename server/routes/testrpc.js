@@ -16,9 +16,47 @@ const basePath = '../smart-contracts/build/contracts';
 
 const getContractByName = (jsonFileName, provider) => {
 	let json = JSON.parse(fs.readFileSync(`${basePath}/${jsonFileName}`));
-	let standardToken = TruffleContract(json);
-	standardToken.setProvider(provider);
-	return standardToken;
+	let contract = TruffleContract(json);
+	contract.setProvider(provider);
+	return contract;
+};
+
+const deploy = async (descriptor) => {
+	let map = {};
+	let provider = descriptor.provider;
+	let newArgs = descriptor.newArgs;
+
+	for (let config of descriptor.contracts) {
+
+		let contract = getContractByName(`${config.name}.json`, provider);
+
+		if (config.dependencies) {
+			for (let dep of config.dependencies) {
+				await contract.detectNetwork();
+				contract.link(dep, map[dep].address);
+			}
+		}
+
+		let args = config.args || [];
+
+		args = args.map( (param) => {
+			if (typeof param === 'string' && param.substr(0,2) === '$$') {
+				let [dep, prop] = param.substr(2).split('.');
+				return map[dep][prop];
+			}
+			
+			return param;
+		});
+
+		args.push(newArgs);
+
+		if (config.deploy !== false) {
+			let contractInstance = await contract.new.apply(contract, args);
+			map[config.name] = contractInstance;
+		}
+	}
+
+	return map;
 };
 
 const deployContracts = async () => {
@@ -31,43 +69,36 @@ const deployContracts = async () => {
 
 			let from = accounts[0];
 
-			let StandardToken = getContractByName('StandardToken.json', provider);
-			let standardTokenInstance = await StandardToken.new({from: from, gas: 4712388});
+			let contractsMap = await deploy({
+				provider: provider,
+				newArgs: {
+					from: from,
+					gas: 4712388
+				},
+				contracts: [{
+					name: 'StandardToken',
+				}, {
+					name: 'HumanStandardToken',
+					args: [100000000,"GoNetwork",1,"$GOT"],
+					dependencies: ['StandardToken']
+				}, {
+					name: 'NettingChannelLibrary',
+					dependencies: ['StandardToken']
+				}, {
+					name: 'NettingChannelContract',
+					dependencies: ['NettingChannelLibrary'],
+					deploy: false
+				}, {
+					name: 'ChannelManagerLibrary',
+					dependencies: ['NettingChannelLibrary']
+				}, {
+					name: 'ChannelManagerContract',
+					dependencies: ['ChannelManagerLibrary'],
+					args: ['0x423b5F62b328D0D6D44870F4Eee316befA0b2dF5', '$$HumanStandardToken.address']  
+				}]
+			});
 
-			let HumanStandardToken = getContractByName('HumanStandardToken.json', provider);
-
-			await HumanStandardToken.detectNetwork();
-
-			HumanStandardToken.link('StandardToken', standardTokenInstance.address);
-			
-			let humanStandardTokenInstance = await HumanStandardToken.new(100000000,"GoNetwork",1,"$GOT", {from: from, gas: 4712388});
-
-			let NettingChannelLibrary = getContractByName('NettingChannelLibrary.json', provider);
-			await NettingChannelLibrary.detectNetwork();
-
-			NettingChannelLibrary.link('StandardToken', standardTokenInstance.address);
-
-			let nettingChannelLibrary = await NettingChannelLibrary.new({from: from, gas: 4712388});
-			
-			let NettingChannelContract = getContractByName('NettingChannelContract.json', provider);
-			await NettingChannelContract.detectNetwork();
-
-			NettingChannelContract.link('NettingChannelLibrary', nettingChannelLibrary.address);
-			
-			let ChannelManagerLibrary = getContractByName('ChannelManagerLibrary.json', provider);
-			await ChannelManagerLibrary.detectNetwork();
-
-			ChannelManagerLibrary.link('NettingChannelLibrary', nettingChannelLibrary.address);
-			let channelManagerLibrary = await ChannelManagerLibrary.new({from: from, gas: 4712388});
-
-			let ChannelManagerContract = getContractByName('ChannelManagerContract.json', provider);
-			await ChannelManagerContract.detectNetwork();
-
-			ChannelManagerContract.link('ChannelManagerLibrary', channelManagerLibrary.address);
-
-			let channelManagerContract = await ChannelManagerContract.new('0x423b5F62b328D0D6D44870F4Eee316befA0b2dF5', humanStandardTokenInstance.address, {from: from, gas: 4712388});
-
-			resolve();
+			resolve(contractsMap);
 		});
 	});
 };
